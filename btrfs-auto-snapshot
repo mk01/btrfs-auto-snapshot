@@ -1,0 +1,404 @@
+#!/bin/sh
+
+tmp_dir='/tmp/btrfs-snap'
+opt_syslog=''
+opt_dev=$(mount | grep " / " | awk '{print $1}')
+opt_dry_run=''
+opt_quiet=''
+opt_verbose=''
+opt_label='regular'
+opt_prefix='btrfs-auto-snap'
+opt_recursive=''
+opt_sep='_'
+opt_rootvolid='0'
+opt_mountpoint=${tmp_dir}/
+opt_snapdir='.btrfs/snapshot'
+opt_delim='@'
+opt_command='snapshot'
+opt_vroot=''
+
+SNAPSHOT_COUNT='0'
+DESTROY_COUNT='0'
+WARNING_COUNT='0'
+
+print_usage ()
+{
+    echo "Usage: $0 command [options] <'//' | name [name...]>
+
+    command            Is one of 
+
+                             list, snapshot 
+                             rename, promote, destroy
+                             listvol 
+                            
+                       If not given, snapshot is assumed.
+    --dev              Device which is part of the btrfs filesystem (by default
+                       is the one mounted as rootfs).
+    -d, --debug        Print debugging messages.
+    -n, --dry-run      Print actions without actually doing anything.
+    -h, --help         Print this usage message.
+    -l, --label=LAB    LAB is usually 'hourly', 'daily', or 'monthly' (default
+                       is 'regular').
+    -p, --prefix=PRE   PRE is '' by default.
+    -q, --quiet        Suppress warnings and notices at the console.
+    -g, --syslog       Write messages into the system log.
+    -v, --verbose      Print info messages.
+    -i, --rootvolid    ID of root volume. All actions are handled in this 
+                       volume tree (default is 0)
+    -m, --mountpoint   Dir used to mount rootvolid. By default ${tmp_dir}
+    -s, --show         List only (existing snapshots). Only those with 
+                       matching label are shown (--show-all displays all)
+    --vroot            Create virtual root as ./ (in case you don't have root
+                       as specific volume it is at ID=rootvolumeid (-i)
+
+      name           Filesystem and volume names, or '//' for all subvolumes.
+" 
+}
+
+print_log () # level, message, ...
+{
+        LEVEL=$1
+        shift 1
+
+        case $LEVEL in
+                (eme*)
+                        test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.emerge "$*"
+                        echo Emergency: "$*" 1>&2
+                        ;;
+                (ale*)
+                        test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.alert "$*"
+                        echo Alert: "$*" 1>&2
+                        ;;
+                (cri*)
+                        test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.crit "$*"
+                        echo Critical: "$*" 1>&2
+                        ;;
+                (err*)
+                        test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.err "$*"
+                        echo Error: "$*" 1>&2
+                        ;;
+                (war*)
+                        test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.warning "$*"
+                        test -z "$opt_quiet" && echo Warning: "$*" 1>&2
+                        WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
+                        ;;
+                (not*)
+                        test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.notice "$*"
+                        test -z "$opt_quiet" && echo "$*"
+                        ;;
+                (inf*)
+                        # test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.info "$*"
+                        test -n "$opt_verbose" && echo "$*"
+                        ;;
+                (deb*)
+                        # test -n "$opt_syslog" && logger -t "$opt_prefix" -p daemon.debug "$*"
+                        test -n "$opt_debug" && echo Debug: "$*"
+                        ;;
+                (*)
+                        test -n "$opt_syslog" && logger -t "$opt_prefix" "$*"
+                        echo "$*" 1>&2
+                        ;;
+        esac
+}
+
+do_run () # [argv]
+{
+        if [ -n "$opt_dry_run" ]
+        then
+                echo "... Running $*"
+                RC="$?"
+        else
+                eval $*
+                RC="$?"
+                if [ "$RC" -eq '0' ]
+                then
+                        print_log debug "$*"
+                else
+                        print_log warning "$* returned $RC"
+                fi
+        fi
+        return "$RC"
+}
+
+do_snapshot ()
+{
+
+	for ii in $TARGETS
+	do
+		print_log debug "Snapshoting $ii."
+
+		if do_run "btrfs sub snapshot $tmp_dir/$ii/$opt_snapdir/@running $tmp_dir/$ii/$opt_snapdir/$SNAPNAME"; then
+			SNAPSHOT_COUNT=$(( $SNAPSHOT_COUNT + 1 ))
+		else
+			WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
+		fi
+	done
+}
+
+do_destroy ()
+{
+	dSNAP="$1"
+	dPATH=''
+	dNAME=''
+
+	dPATH=$(echo $dSNAP | awk -F'@' '{print $1}')
+	if [ -z "$dPATH" -a -n $opt_vroot ]; then
+		dPATH='./'
+	fi
+	dNAME=$(echo "$dSNAP" | awk -F'@' '{print $2}')
+
+	print_log debug "Destroying $tmp_dir/$dPATH$opt_snapdir@$dNAME"
+	if do_run "btrfs sub delete $tmp_dir/$dPATH$opt_snapdir/@$dNAME"; then
+		DESTROY_COUNT=$(( $DESTROY_COUNT + 1 ))
+	else
+		WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
+	fi
+
+}
+
+do_rename () 
+{
+	dSNAP="$2"
+	dPATH=''
+	dNAME=''
+	sSNAP="$1"
+	sPATH=''
+	sNAME=''
+
+
+	dPATH=$(echo "$dSNAP" | awk -F'@' '{print $1}')
+	if [ -z "$dPATH" -a -n "$opt_vroot" ]; then
+		dPATH='./'
+	fi
+	dNAME=$(echo "$dSNAP" | awk -F'@' '{print $2}')
+	
+	sPATH=$(echo "$sSNAP" | awk -F'@' '{print $1}')
+	if [ -z "$sPATH" -a -n "$opt_vroot" ]; then
+		sPATH='./'
+	fi
+	sNAME=$(echo "$sSNAP" | awk -F'@' '{print $2}')
+
+	sNAME="$tmp_dir/$sPATH$opt_snapdir/@$sNAME"
+	dNAME="$tmp_dir/$dPATH$opt_snapdir/@$dNAME"
+	
+	if [ "$sPATH" != "$dPATH" ]; then
+		print_log error "Can't rename snapshot across volumes"
+		exit 300
+	elif [ -e "$dNAME" ]; then
+		print_log error "Destination name already exists!"
+		exit 301
+	elif [ ! -e "$sNAME" ]; then
+		print_log error "Source name does not exists!"
+		exit 302
+	else
+		if do_run "mv $sNAME $dNAME"; then
+			print_log debug "Rename ok"
+		else
+			WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
+		fi
+	fi 
+
+}
+
+
+if [ "$#" -eq '0' ]; then
+    print_log error "Argument list empty"
+    exit 104
+fi
+
+stopt=${1%%-*}
+if [ "$1" != '//' -a "$stopt" != '' ]; then
+    opt_command="$1"
+    shift 1
+else
+    opt_command='snapshot'
+fi
+
+GETOPT=$(getopt \
+        --longoptions=label:,prefix:,verbose,debug,rootvolid:,mountdir:,dev:,dry-run,vroot \
+        --options=p:dvl:i:m:nh \
+        -- "$@" ) \
+        || exit 128
+
+eval set -- ${GETOPT}
+
+while [ "$#" -gt '0' ]
+do
+        case "$1" in
+                (--dev)
+                        opt_dev="$2"
+                        shift 2
+                        ;;
+                (-d|--debug)
+                        opt_debug='1'
+                        opt_quiet=''
+                        opt_verbose='1'
+                        shift 1
+                        ;;
+                (-n|--dry-run)
+                        opt_dry_run='1'
+                        shift 1
+                        ;;
+                (-p|--prefix)
+                        opt_prefix="$2"
+                        shift 2
+                        ;;
+                (-v|--verbose)
+                        opt_verbose='1'
+                        shift 1
+                        ;;
+                (-l|--label)
+                        opt_label='$2'
+                        shift 2
+                        ;;
+                (-i|--rootvolid)
+                        opt_rootvolid="$2"
+                        shift 2
+                        ;;
+                (-m|--mountpoint)
+                        opt_mountpoint="$2"
+                        shift 2
+                        ;;
+                (-s|--show)
+                        opt_show='1'
+                        shift 1
+                        ;;
+                (--show-all)
+                        opt_show='2'
+                        shift 1
+                        ;;
+                (-h)
+                        print_usage
+                        shift 1
+                        exit 
+                        ;;
+                (--vroot)
+                        opt_vroot='1'
+                        shift 1
+                        ;;
+                (--)
+                        shift 1
+                        break
+                        ;;
+        esac
+done
+
+print_log debug "Using command $opt_command."
+
+if [ "$#" -eq '0' ]
+then
+        print_log error "The filesystem argument list is empty."
+        exit 133
+fi 
+
+# ISO style date; fifteen characters: YYYY-MM-DD-HHMM
+# On Solaris %H%M expands to 12h34.
+DATE=$(date +%F-%H%M)
+
+COUNTER='0'
+while true; do
+        if do_run "mkdir '${tmp_dir}'"; then 
+            if ! $(mount -t btrfs -o subvolid=$opt_rootvolid $opt_dev ${opt_mountpoint}); then
+                print_log error "unable to mount the filesystem"
+                exit 100
+            fi
+            break
+        fi  
+        print_log error "another copy is running ... $COUNTER"
+        test "$COUNTER" -gt '11' && exit 99
+        sleep 5
+        COUNTER=$(( $COUNTER + 1 ))
+done
+trap "umount ${opt_mountpoint} ; rmdir '${tmp_dir}'" INT TERM EXIT
+
+DATE=$(date +%F-%H%M)
+
+# The snapshot name after the @ symbol.
+SNAPNAME="$opt_delim$opt_prefix${opt_label:+$opt_sep$opt_label-$DATE}"
+
+# The expression for matching old snapshots.  -YYYY-MM-DD-HHMM
+SNAPGLOB="$opt_delim$opt_prefix${opt_label:+?$opt_label}????????????????"
+
+case $opt_command in 
+	(listvol|list|snapshot)
+		# Count the number of times '//' appears on the command line.
+		SLASHIES='0'
+		for ii in "$@"
+		do
+			test "$ii" = '//' && SLASHIES=$(( $SLASHIES + 1 ))
+		done
+
+		if [ "$#" -gt '1' -a "$SLASHIES" -gt '0' ]
+		then
+			print_log error "The // must be the only argument if it is given."
+			exit 134
+		fi
+
+		BTRFS_LIST=$(btrfs sub list ${opt_mountpoint} | sort -k7 | grep -v ${opt_snapdir} | awk '{print $7}')  \
+			|| { print_log error "unable to get list of volumes"; exit 102; }
+
+		BTRFS_LIST=$(printf "%s\n" "$BTRFS_LIST")
+		test -n "$opt_vroot" && BTRFS_LIST=$(printf ".\n%s\n" "$BTRFS_LIST") 
+
+		# Verify that each argument exists
+		for ii in "$@"
+		do
+			test "$ii" = '//' && continue 1
+			for jj in $BTRFS_LIST
+			do
+				test "$ii" = "$jj" && continue 2
+			done
+			print_log error "$ii is not existing volume."
+			exit 138
+		done
+
+		TARGETS=''
+
+		for ii in "$@"
+		do
+			if [ "$ii" = '//' ]; then
+			TARGETS=$BTRFS_LIST
+			continue
+		fi
+		TARGETS=$(printf "%s\n%s" $TARGETS $ii)  
+		done
+		;;
+	(*)
+		;;
+esac
+
+SNAPSHOTS_OLD=$(btrfs sub list ${opt_mountpoint} | sort -k7 | grep ${opt_snapdir} | awk '{print $7}' | awk -F"$opt_snapdir/" '{print $1 $2}') \
+    || { print_log error "unable to get list of snapshots"; exit 103; }
+
+case $opt_command in
+	(listvol)
+		printf "%s\n" $BTRFS_LIST
+		;;
+	(list)
+		printf "%s\n" $SNAPSHOTS_OLD
+		;;
+	(snapshot)
+		do_snapshot
+		;;
+	(destroy)
+		do_destroy "$1"
+		;;
+	(rename)
+		do_rename "$1" "$2"
+		;;
+	(promote)
+		print_log error "$opt_command command not implemented (yet)."
+		exit 199
+		;;
+	(*)
+		print_log error "Wrong command."
+		exit 200
+		;;
+esac
+
+print_log notice "$SNAPNAME," \
+        "$SNAPSHOT_COUNT created snapshots," \
+	"$DESTROY_COUNT destroyed snapshots," \
+        "$WARNING_COUNT warnings."
+
+exit 0

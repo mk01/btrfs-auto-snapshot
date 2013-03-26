@@ -45,16 +45,19 @@ IDs of subvolumes and use in mount process. But it's ugly. We wan't easy, nice a
 
 After few days of running and few reformats, finally I choosed this:
 
+```
 btrfs-fs(id=0) -- ROOT
                 \ HOME
                 \ VAR
-                
+```
+
 You don't get auto mounting like with zfs with such structure, but you can setup fstab records once, even if you 'restore'
 or use other version, 'subvolumes' will be mounted as it should be. 
 
 Finally I ended with a structure like this. More to say, even the running 'master' copy, the actual filesystem if not 
 direclty the volume, but only subvolume under it.
 
+```
 btrfs-fs(id=0) -- ROOT / @running 
                         
                 
@@ -62,9 +65,10 @@ btrfs-fs(id=0) -- ROOT / @running
                 
                 
                 \ VAR / @running 
-                
+```                
 New snapshot for ROOT is created from @running, but put under ROOT. Making 
 
+```
 btrfs-fs(id=0) -- ROOT / @running / [x]
                        / @snap1
                 
@@ -73,7 +77,8 @@ btrfs-fs(id=0) -- ROOT / @running / [x]
                 
                 \ VAR  / @running 
                        / @snap_wrong_copy
-                        
+```
+
 (We have to say, that to acomplish this, you need to mount btrfs in separate dir with subvolid=0 option and do all the 
 steps from this perspective. Otherwise you won't be able to place @snap1 where it is, because your running rootfs is the
 [x] mark. The real mounted live filesystems are olways ony @running, creating static fstab is easy. Then promote /

@@ -1,7 +1,7 @@
 btrfs-auto-snapshot
 ===================
 
-btrfs-auto-snapshot targets to provide functionality like zfs-auto-snapshot. 
+btrfs-auto-snapshot targets to provide functionality like zfs-auto-snapshot. It should be sh runnable posix script.
 
 Unfortunatelly btrfs concept of snapshots beeing only another subvolumes is bringing a bit chaos and a need to 
 think-twice of a concept: how to organize, name and work with btrfs filesystem.

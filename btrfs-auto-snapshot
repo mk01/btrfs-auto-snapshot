@@ -2,7 +2,7 @@
 
 # btrfs-auto-snapshot for Linux.
 # Automatically create, rotate, and destroy periodic BTRFS snapshots.
-# Copyright 2013 Matus Kral <matuskral@me.com>
+# Copyright 2013 Matus Kral <matuskral@icloud.com>
 #
 # I'm trying to keep structure and reuse of zfs-auto-snapshot (zevo) version
 # at https://github.com/mk01/zfs-auto-snapshot.git which is based on 
@@ -22,19 +22,20 @@
 # this program; if not, write to the Free Software Foundation, Inc., 59 Temple
 # Place, Suite 330, Boston, MA  02111-1307  USA
 
-
 tmp_dir='/tmp/btrfs-snap'
 opt_syslog=''
 opt_dev=$(mount | grep " / " | awk '{print $1}')
 opt_dry_run=''
 opt_quiet=''
 opt_verbose=''
+opt_keep=''
 opt_label='regular'
 opt_prefix='btrfs-auto-snap'
 opt_recursive=''
 opt_sep='_'
 opt_rootvolid='0'
-opt_mountpoint=${tmp_dir}/
+opt_createdirs=''
+opt_mountpoint=${tmp_dir}
 opt_snapdir='.btrfs/snapshot'
 opt_delim='@'
 opt_command='snapshot'
@@ -60,19 +61,19 @@ print_usage ()
     -d, --debug        Print debugging messages.
     -n, --dry-run      Print actions without actually doing anything.
     -h, --help         Print this usage message.
+    -k, --keep=NUM     Keep NUM recent snapshots and destroy older snapshots.
     -l, --label=LAB    LAB is usually 'hourly', 'daily', or 'monthly' (default
                        is 'regular').
-    -p, --prefix=PRE   PRE is '' by default.
+    -p, --prefix=PRE   PRE is 'btrfs-auto-snap' by default.
+    -e, --name         Snapshot name. If specified, -l and -p are overridden
+                       and --keep is not considered.
     -q, --quiet        Suppress warnings and notices at the console.
-    -g, --syslog       Write messages into the system log.
+    -s, --syslog       Write messages into the system log.
     -v, --verbose      Print info messages.
     -i, --rootvolid    ID of root volume. All actions are handled in this 
                        volume tree (default is 0)
     -m, --mountpoint   Dir used to mount rootvolid. By default ${tmp_dir}
-    -s, --show         List only (existing snapshots). Only those with 
-                       matching label are shown (--show-all displays all)
-    --vroot            Create virtual root as ./ (in case you don't have root
-                       as specific volume it is at ID=rootvolumeid (-i)
+    -t,--dirs          Create snapshot directories if needed.
 
       name           Filesystem and volume names, or '//' for all subvolumes.
 " 
@@ -143,6 +144,21 @@ do_run () # [argv]
         return "$RC"
 }
 
+do_destroy ()
+{
+        dSNAP="$1"
+
+        dSNAP=$(eval echo "$1 | awk '{sub(/$opt_delim/,\"$opt_snapdir/$opt_delim\")}; 1'")
+
+        print_log debug "Destroying $opt_mountpoint/$dSNAP"
+        if do_run "btrfs sub delete $opt_mountpoint/$dSNAP"; then
+                DESTROY_COUNT=$(( $DESTROY_COUNT + 1 ))
+        else
+                WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
+        fi
+
+}
+
 do_snapshot ()
 {
 
@@ -150,79 +166,68 @@ do_snapshot ()
 	do
 		print_log debug "Snapshoting $ii."
 
-		if do_run "btrfs sub snapshot $tmp_dir/$ii/$opt_snapdir/@running $tmp_dir/$ii/$opt_snapdir/$SNAPNAME"; then
-			SNAPSHOT_COUNT=$(( $SNAPSHOT_COUNT + 1 ))
-		else
-			WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
-		fi
-	done
-}
+		if [ ! -d $opt_mountpoint/$ii/$opt_snapdir -a -n "$opt_createdirs" ]; then
+                        print_log debug "Creating snapshot directory for $ii."
+                        mkdir -p $opt_mountpoint/$ii/$opt_snapdir
+                fi
+                if [ ! -d "$opt_mountpoint/$ii/$opt_snapdir/$SNAPNAME" ]; then
+                        if do_run "btrfs sub snapshot $opt_mountpoint/$ii $opt_mountpoint/$ii/$opt_snapdir/$SNAPNAME"; then
+                                SNAPSHOT_COUNT=$(( $SNAPSHOT_COUNT + 1 ))
+                        else
+                                WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
+                        fi
+                else
+                        print_log warning "Snapshot or volume with this name already exists, skipping $ii/$opt_snapdir/$SNAPNAME"
+                fi
 
-do_destroy ()
-{
-	dSNAP="$1"
-	dPATH=''
-	dNAME=''
+                KEEP="$opt_keep"
+                test -z "$KEEP" && continue
+                for jj in $SNAPSHOTS_OLD
+                do
+                        if [ -z "${jj#$ii/$SNAPGLOB}" ]; then
+                                KEEP=$(( $KEEP - 1 ))
+                                test "$KEEP" -le '0' && do_destroy "$jj"
+                        fi
+                done
 
-	dPATH=$(echo $dSNAP | awk -F'@' '{print $1}')
-	if [ -z "$dPATH" -a -n $opt_vroot ]; then
-		dPATH='./'
-	fi
-	dNAME=$(echo "$dSNAP" | awk -F'@' '{print $2}')
-
-	print_log debug "Destroying $tmp_dir/$dPATH$opt_snapdir@$dNAME"
-	if do_run "btrfs sub delete $tmp_dir/$dPATH$opt_snapdir/@$dNAME"; then
-		DESTROY_COUNT=$(( $DESTROY_COUNT + 1 ))
-	else
-		WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
-	fi
+        done
 
 }
 
 do_rename () 
 {
-	dSNAP="$2"
-	dPATH=''
-	dNAME=''
-	sSNAP="$1"
-	sPATH=''
-	sNAME=''
+        dSNAP="$opt_mountpoint/$2"
+        sSNAP="$opt_mountpoint/$1"
 
+        dSNAP=$(eval echo "$dSNAP | awk '{sub(/$opt_delim/,\"$opt_snapdir/$opt_delim\")}; 1'")
+        sSNAP=$(eval echo "$sSNAP | awk '{sub(/$opt_delim/,\"$opt_snapdir/$opt_delim\")}; 1'")
 
-	dPATH=$(echo "$dSNAP" | awk -F'@' '{print $1}')
-	if [ -z "$dPATH" -a -n "$opt_vroot" ]; then
-		dPATH='./'
-	fi
-	dNAME=$(echo "$dSNAP" | awk -F'@' '{print $2}')
-	
-	sPATH=$(echo "$sSNAP" | awk -F'@' '{print $1}')
-	if [ -z "$sPATH" -a -n "$opt_vroot" ]; then
-		sPATH='./'
-	fi
-	sNAME=$(echo "$sSNAP" | awk -F'@' '{print $2}')
+        sPATH=$(basename $sSNAP)
+        sPATH=$(echo ${sSNAP%%$sPATH})
 
-	sNAME="$tmp_dir/$sPATH$opt_snapdir/@$sNAME"
-	dNAME="$tmp_dir/$dPATH$opt_snapdir/@$dNAME"
-	
-	if [ "$sPATH" != "$dPATH" ]; then
-		print_log error "Can't rename snapshot across volumes"
-		exit 300
-	elif [ -e "$dNAME" ]; then
-		print_log error "Destination name already exists!"
-		exit 301
-	elif [ ! -e "$sNAME" ]; then
-		print_log error "Source name does not exists!"
-		exit 302
-	else
-		if do_run "mv $sNAME $dNAME"; then
-			print_log debug "Rename ok"
-		else
-			WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
-		fi
-	fi 
+        dPATH=$(basename $dSNAP)
+        dPATH=$(echo ${dSNAP%%$dPATH})
+
+        print_log debug "Renaming from $sPATH to $dPATH"
+
+        if [ "$sPATH" != "$dPATH" ]; then
+                print_log error "Can't rename snapshot across volumes"
+                exit 300
+        elif [ -d "$dSNAP" ]; then
+                print_log error "Destination name already exists!"
+                exit 301
+        elif [ ! -d "$sSNAP" ]; then
+                print_log error "Source name does not exists!"
+                exit 302
+        else
+                if do_run "mv $sSNAP $dSNAP"; then
+                        print_log debug "Rename ok"
+                else
+                        WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
+                fi
+        fi 
 
 }
-
 
 if [ "$#" -eq '0' ]; then
     print_log error "Argument list empty"
@@ -238,8 +243,8 @@ else
 fi
 
 GETOPT=$(getopt \
-        --longoptions=label:,prefix:,verbose,debug,rootvolid:,mountdir:,dev:,dry-run,vroot \
-        --options=p:dvl:i:m:nh \
+        --longoptions=label:,prefix:,verbose,debug,rootvolid:,mountdir:,dev:,dry-run,dirs,syslog,keep:,name: \
+        --options=p:dvl:i:m:nhtsk:e: \
         -- "$@" ) \
         || exit 128
 
@@ -250,6 +255,10 @@ do
         case "$1" in
                 (--dev)
                         opt_dev="$2"
+                        shift 2
+                        ;;
+                (-e|--name)
+                        opt_name="$2"
                         shift 2
                         ;;
                 (-d|--debug)
@@ -270,8 +279,16 @@ do
                         opt_verbose='1'
                         shift 1
                         ;;
+                (-s|--syslog)
+                        opt_syslog='1'
+                        shift 1
+                        ;;
                 (-l|--label)
-                        opt_label='$2'
+                        opt_label="$2"
+                        shift 2
+                        ;;
+                (-k|--keep)
+                        opt_keep="$2"
                         shift 2
                         ;;
                 (-i|--rootvolid)
@@ -282,22 +299,14 @@ do
                         opt_mountpoint="$2"
                         shift 2
                         ;;
-                (-s|--show)
-                        opt_show='1'
-                        shift 1
-                        ;;
-                (--show-all)
-                        opt_show='2'
+                (--dirs|-t)
+                        opt_createdirs='1'
                         shift 1
                         ;;
                 (-h)
                         print_usage
                         shift 1
                         exit 
-                        ;;
-                (--vroot)
-                        opt_vroot='1'
-                        shift 1
                         ;;
                 (--)
                         shift 1
@@ -308,11 +317,25 @@ done
 
 print_log debug "Using command $opt_command."
 
-if [ "$#" -eq '0' ]
-then
-        print_log error "The filesystem argument list is empty."
-        exit 133
-fi 
+if [ "$#" -eq '0' ]; then
+        if [ "$opt_command" != 'list' -a "$opt_command" != 'listvol' ]; then
+                print_log error "The filesystem argument list is empty."
+                exit 133
+        else
+                set "//"
+        fi
+fi
+
+if [ "$opt_delim" = '' ]; then
+        print_log error "Snapshot's name first character can't be empty - can be longer than one character. Default shoul be '@'. Don't use this character in volume names afterwards."
+        exit 134
+fi
+
+if [ -n "$opt_name" ]; then
+        opt_prefix="$opt_name"
+        opt_label=''
+        opt_keep=''
+fi
 
 # ISO style date; fifteen characters: YYYY-MM-DD-HHMM
 # On Solaris %H%M expands to 12h34.
@@ -320,12 +343,13 @@ DATE=$(date +%F-%H%M)
 
 COUNTER='0'
 while true; do
-        if do_run "mkdir '${tmp_dir}'"; then 
-            if ! $(mount -t btrfs -o subvolid=$opt_rootvolid $opt_dev ${opt_mountpoint}); then
-                print_log error "unable to mount the filesystem"
-                exit 100
-            fi
-            break
+        if $(mkdir "${tmp_dir}"); then 
+                if ! $(mount -t btrfs -o subvolid=$opt_rootvolid $opt_dev $opt_mountpoint); then
+                        print_log error "unable to mount the filesystem"
+                        rmdir ${tmp_dir}
+                        exit 100
+                fi
+                break
         fi  
         print_log error "another copy is running ... $COUNTER"
         test "$COUNTER" -gt '11' && exit 99
@@ -333,6 +357,8 @@ while true; do
         COUNTER=$(( $COUNTER + 1 ))
 done
 trap "umount ${opt_mountpoint} ; rmdir '${tmp_dir}'" INT TERM EXIT
+
+test -d $opt_mountpoint/$opt_snapdir && opt_vroot='1'
 
 DATE=$(date +%F-%H%M)
 
@@ -390,38 +416,37 @@ case $opt_command in
 		;;
 esac
 
-SNAPSHOTS_OLD=$(btrfs sub list ${opt_mountpoint} | sort -k7 | grep ${opt_snapdir} | awk '{print $7}' | awk -F"$opt_snapdir/" '{print $1 $2}') \
+SNAPSHOTS_OLD=$(btrfs sub list ${opt_mountpoint} | sort -k7r | grep ${opt_snapdir}/${opt_delim} | awk '{print $7}' | awk -F"$opt_snapdir/" '{print $1 $2}') \
     || { print_log error "unable to get list of snapshots"; exit 103; }
 
 case $opt_command in
-	(listvol)
-		printf "%s\n" $BTRFS_LIST
-		;;
-	(list)
-		printf "%s\n" $SNAPSHOTS_OLD
-		;;
-	(snapshot)
-		do_snapshot
-		;;
-	(destroy)
-		do_destroy "$1"
-		;;
-	(rename)
-		do_rename "$1" "$2"
-		;;
-	(promote)
-		print_log error "$opt_command command not implemented (yet)."
-		exit 199
-		;;
-	(*)
-		print_log error "Wrong command."
-		exit 200
-		;;
+        (listvol)
+                printf "%s\n" $BTRFS_LIST
+                ;;
+        (list)
+                printf "%s\n" $SNAPSHOTS_OLD | sort 
+                ;;
+        (snapshot)
+                do_snapshot
+                print_log notice "$SNAPNAME," \
+                        "$SNAPSHOT_COUNT created snapshots," \
+                        "$DESTROY_COUNT destroyed snapshots," \
+                        "$WARNING_COUNT warnings."
+                ;;
+        (destroy)
+                do_destroy "$1"
+                ;;
+        (rename)
+                do_rename "$1" "$2"
+                ;;
+        (promote)
+                print_log error "$opt_command command not implemented (yet)."
+                exit 199
+                ;;
+        (*)
+                print_log error "Wrong command."
+                exit 200
+                ;;
 esac
-
-print_log notice "$SNAPNAME," \
-        "$SNAPSHOT_COUNT created snapshots," \
-	"$DESTROY_COUNT destroyed snapshots," \
-        "$WARNING_COUNT warnings."
 
 exit 0

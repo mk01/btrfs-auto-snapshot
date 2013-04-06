@@ -13,18 +13,21 @@ to snapshots manipulation - list snapshots, volumes, snapshot command, destroy, 
 Currently functional in testing is:
 
 working 
-
+```
 1) listing volumes and snapshots
 2) creating ad hoc snapshots (will not be touched by rotations) 
 3) regular (planned snapshots)
 4) destroy
 5) snapshots rotation (rr, hanoi tower still to go)
 6) rename
+```
 
 missing
+```
 7) promote
 8) rollback
 9) clone
+```
 
 
 Alltogether with the scripting itself some organization of btrfs subvolumes is needed. Btrfs is one big tree of 

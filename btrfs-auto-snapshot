@@ -147,6 +147,8 @@ do_run () # [argv]
 do_destroy ()
 {
         dSNAP="$1"
+        dPATH=''
+        dNAME=''
 
         dSNAP=$(eval echo "$1 | awk '{sub(/$opt_delim/,\"$opt_snapdir/$opt_delim\")}; 1'")
 
@@ -182,9 +184,14 @@ do_snapshot ()
 
                 KEEP="$opt_keep"
                 test -z "$KEEP" && continue
+                if [ "$ii" = "." ]; then
+                        ii=""
+                else
+                        ii="$ii/"
+                fi
                 for jj in $SNAPSHOTS_OLD
                 do
-                        if [ -z "${jj#$ii/$SNAPGLOB}" ]; then
+                        if [ -z "${jj#$ii$SNAPGLOB}" ]; then
                                 KEEP=$(( $KEEP - 1 ))
                                 test "$KEEP" -le '0' && do_destroy "$jj"
                         fi

@@ -36,7 +36,8 @@ opt_sep='_'
 opt_rootvolid='0'
 opt_createdirs=''
 opt_mountpoint=${tmp_dir}
-opt_snapdir='.btrfs/snapshot'
+#opt_snapdir='.btrfs/snapshot'
+opt_snapdir=''
 opt_delim='@'
 opt_command='snapshot'
 opt_vroot=''
@@ -365,7 +366,7 @@ while true; do
 done
 trap "umount ${opt_mountpoint} ; rmdir '${tmp_dir}'" INT TERM EXIT
 
-test -d $opt_mountpoint/$opt_snapdir && opt_vroot='1'
+test -d $opt_mountpoint/$opt_snapdir && test -n "$opt_snapdir" && opt_vroot='1'
 
 DATE=$(date +%F-%H%M)
 
@@ -390,7 +391,7 @@ case $opt_command in
 			exit 134
 		fi
 
-		BTRFS_LIST=$(btrfs sub list ${opt_mountpoint} | sort -k7 | grep -v ${opt_snapdir} | awk '{print $7}')  \
+		BTRFS_LIST=$(btrfs sub list ${opt_mountpoint} | sort -k7 | grep -v ${opt_delim} | awk '{print $7}')  \
 			|| { print_log error "unable to get list of volumes"; exit 102; }
 
 		BTRFS_LIST=$(printf "%s\n" "$BTRFS_LIST")

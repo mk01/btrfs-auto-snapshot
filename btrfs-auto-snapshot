@@ -36,7 +36,7 @@ opt_sep='_'
 opt_rootvolid='0'
 opt_createdirs=''
 opt_mountpoint=${tmp_dir}
-#opt_snapdir='.btrfs/snapshot'
+#opt_snapdir='.btrfs/snapshot/'
 opt_snapdir=''
 opt_delim='@'
 opt_command='snapshot'
@@ -53,8 +53,8 @@ print_usage ()
     command            Is one of 
 
                              list, snapshot 
-                             rename, promote, destroy
-                             listvol 
+                             rename, destroy
+                             listvol, rollback
                             
                        If not given, snapshot is assumed.
     --dev              Device which is part of the btrfs filesystem (by default
@@ -151,7 +151,7 @@ do_destroy ()
         dPATH=''
         dNAME=''
 
-        dSNAP=$(eval echo "$1 | awk '{sub(/$opt_delim/,\"$opt_snapdir/$opt_delim\")}; 1'")
+        dSNAP=$(eval echo "$1 | awk '{sub(/$opt_delim/,\"$opt_snapdir$opt_delim\")}; 1'")
 
         print_log debug "Destroying $opt_mountpoint/$dSNAP"
         if do_run "btrfs sub delete $opt_mountpoint/$dSNAP"; then
@@ -173,14 +173,14 @@ do_snapshot ()
                         print_log debug "Creating snapshot directory for $ii."
                         mkdir -p $opt_mountpoint/$ii/$opt_snapdir
                 fi
-                if [ ! -d "$opt_mountpoint/$ii/$opt_snapdir/$SNAPNAME" ]; then
-                        if do_run "btrfs sub snapshot $opt_mountpoint/$ii $opt_mountpoint/$ii/$opt_snapdir/$SNAPNAME"; then
+                if [ ! -d "$opt_mountpoint/$ii/$opt_snapdir$SNAPNAME" ]; then
+                        if do_run "btrfs sub snapshot $opt_mountpoint/$ii $opt_mountpoint/$ii/$opt_snapdir$SNAPNAME"; then
                                 SNAPSHOT_COUNT=$(( $SNAPSHOT_COUNT + 1 ))
                         else
                                 WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
                         fi
                 else
-                        print_log warning "Snapshot or volume with this name already exists, skipping $ii/$opt_snapdir/$SNAPNAME"
+                        print_log warning "Snapshot or volume with this name already exists, skipping $ii/$opt_snapdir$SNAPNAME"
                 fi
 
                 KEEP="$opt_keep"
@@ -207,8 +207,8 @@ do_rename ()
         dSNAP="$opt_mountpoint/$2"
         sSNAP="$opt_mountpoint/$1"
 
-        dSNAP=$(eval echo "$dSNAP | awk '{sub(/$opt_delim/,\"$opt_snapdir/$opt_delim\")}; 1'")
-        sSNAP=$(eval echo "$sSNAP | awk '{sub(/$opt_delim/,\"$opt_snapdir/$opt_delim\")}; 1'")
+        dSNAP=$(eval echo "$dSNAP | awk '{sub(/$opt_delim/,\"$opt_snapdir$opt_delim\")}; 1'")
+        sSNAP=$(eval echo "$sSNAP | awk '{sub(/$opt_delim/,\"$opt_snapdir$opt_delim\")}; 1'")
 
         sPATH=$(basename $sSNAP)
         sPATH=$(echo ${sSNAP%%$sPATH})
@@ -424,8 +424,13 @@ case $opt_command in
 		;;
 esac
 
-SNAPSHOTS_OLD=$(btrfs sub list ${opt_mountpoint} | sort -k7r | grep ${opt_snapdir}/${opt_delim} | awk '{print $7}' | awk -F"$opt_snapdir/" '{print $1 $2}') \
+if [ -n "$opt_snapdir" ]; then 
+    SNAPSHOTS_OLD=$(btrfs sub list ${opt_mountpoint} | sort -k7r | grep ${opt_snapdir}${opt_delim} | awk '{print $7}' | awk -F"$opt_snapdir" '{print $1 $2}') \
     || { print_log error "unable to get list of snapshots"; exit 103; }
+else
+    SNAPSHOTS_OLD=$(btrfs sub list ${opt_mountpoint} | sort -k7r | grep ${opt_delim} | awk '{print $7}') \
+    || { print_log error "unable to get list of snapshots"; exit 103; }
+fi
 
 case $opt_command in
         (listvol)
@@ -447,9 +452,12 @@ case $opt_command in
         (rename)
                 do_rename "$1" "$2"
                 ;;
-        (promote)
-                print_log error "$opt_command command not implemented (yet)."
-                exit 199
+        (rollback)
+		tmpd=$(mktemp -u)
+		tmpd=$(basename $tmpd)
+		do_rename $(dirname $1)/@ $(dirname $1)/@$tmpd
+		do_rename $1 $(dirname $1)/@
+		do_rename $(dirname $1)/@$tmpd $1_rollback
                 ;;
         (*)
                 print_log error "Wrong command."

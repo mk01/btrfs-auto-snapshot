@@ -38,6 +38,10 @@ opt_createdirs=''
 opt_mountpoint=${tmp_dir}
 #opt_snapdir='.btrfs/snapshot/'
 opt_snapdir=''
+
+# what is name for snapshot which is normaly mounted as running filesystem (if SUBVOL/@running, then use "@running")
+opt_runningcopyin='@'
+
 opt_delim='@'
 opt_command='snapshot'
 opt_vroot=''
@@ -174,7 +178,7 @@ do_snapshot ()
                         mkdir -p $opt_mountpoint/$ii/$opt_snapdir
                 fi
                 if [ ! -d "$opt_mountpoint/$ii/$opt_snapdir$SNAPNAME" ]; then
-                        if do_run "btrfs sub snapshot $opt_mountpoint/$ii $opt_mountpoint/$ii/$opt_snapdir$SNAPNAME"; then
+                        if do_run "btrfs sub snapshot $opt_mountpoint/$ii/$opt_runningcopyin $opt_mountpoint/$ii/$opt_snapdir$SNAPNAME"; then
                                 SNAPSHOT_COUNT=$(( $SNAPSHOT_COUNT + 1 ))
                         else
                                 WARNING_COUNT=$(( $WARNING_COUNT + 1 ))
